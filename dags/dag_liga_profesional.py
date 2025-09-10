@@ -7,7 +7,7 @@ import time
 import os
 
 # Configuración de la API
-API_KEY = os.getenv('API_FOOTBALL_KEY', 'your_api_key_here')
+API_KEY = os.getenv('API_FOOTBALL_KEY', 'api-key')
 BASE_URL = 'https://v3.football.api-sports.io'
 HEADERS = {
     'X-RapidAPI-Key': API_KEY,
@@ -81,12 +81,21 @@ def merge_all_data(**context):
 
     # merge con standings home
     df_final = df_fixtures.merge(
-        df_standings.rename(columns={'team_id': 'home_id', 'position': 'position_home', 'points': 'points_home'}),
+        df_standings.rename(
+            columns={
+                'team_id': 'home_id', 
+                'position': 'position_home', 
+                'points': 'points_home'
+            }),
         on=['home_id', 'season'], how='left'
     )
     # merge con standings away
     df_final = df_final.merge(
-        df_standings.rename(columns={'team_id': 'away_id', 'position': 'position_away', 'points': 'points_away'}),
+        df_standings.rename(
+            columns={'team_id': 'away_id', 
+            'position': 'position_away', 
+            'points': 'points_away'
+        }),
         on=['away_id', 'season'], how='left'
     )
 
@@ -121,10 +130,9 @@ default_args = {
 }
 
 dag = DAG(
-    dag_id='liga_profesional_data_extraction',
+    dag_id='dag_liga_profesional',
     default_args=default_args,
     description='Extracción de datos de Liga Profesional Argentina desde API-FOOTBALL',
-    schedule='@daily',
     catchup=False,
     max_active_runs=1,
     tags=['football', 'liga-profesional', 'data-extraction']
@@ -136,5 +144,4 @@ task_merge_data = PythonOperator(task_id='merge_all_data', python_callable=merge
 task_cleanup = PythonOperator(task_id='cleanup_temp_files', python_callable=cleanup_temp_files, dag=dag)
 
 # Dependencias
-[task_extract_fixtures, task_extract_standings] >> task_merge_data
-task_merge_data >> task_cleanup
+[task_extract_fixtures, task_extract_standings] >> task_merge_data >> task_cleanup
