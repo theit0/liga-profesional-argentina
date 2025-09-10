@@ -1,100 +1,145 @@
-"""
-## Astronaut ETL example DAG
-
-This DAG queries the list of astronauts currently in space from the
-Open Notify API and prints each astronaut's name and flying craft.
-
-There are two tasks, one to get the data from the API and save the results,
-and another to print the results. Both tasks are written in Python using
-Airflow's TaskFlow API, which allows you to easily turn Python functions into
-Airflow tasks, and automatically infer dependencies and pass data.
-
-The second task uses dynamic task mapping to create a copy of the task for
-each Astronaut in the list retrieved from the API. This list will change
-depending on how many Astronauts are in space, and the DAG will adjust
-accordingly each time it runs.
-
-For more explanation and getting started instructions, see our Write your
-first DAG tutorial: https://www.astronomer.io/docs/learn/get-started-with-airflow
-
-![Picture of the ISS](https://www.esa.int/var/esa/storage/images/esa_multimedia/images/2010/02/space_station_over_earth/10293696-3-eng-GB/Space_Station_over_Earth_card_full.jpg)
-"""
-
-from airflow.sdk.definitions.asset import Asset
-from airflow.decorators import dag, task
-from pendulum import datetime
+from datetime import datetime, timedelta
+from airflow import DAG
+from airflow.operators.python import PythonOperator
+import pandas as pd
 import requests
+import time
+import os
 
+# Configuración de la API
+API_KEY = os.getenv('API_FOOTBALL_KEY', 'your_api_key_here')
+BASE_URL = 'https://v3.football.api-sports.io'
+HEADERS = {
+    'X-RapidAPI-Key': API_KEY,
+    'X-RapidAPI-Host': 'v3.football.api-sports.io'
+}
 
-# Define the basic parameters of the DAG, like schedule and start_date
-@dag(
-    start_date=datetime(2024, 1, 1),
-    schedule="@daily",
-    catchup=False,
-    doc_md=__doc__,
-    default_args={"owner": "Astro", "retries": 3},
-    tags=["example"],
-)
-def example_astronauts():
-    # Define tasks
-    @task(
-        # Define a dataset outlet for the task. This can be used to schedule downstream DAGs when this task has run.
-        outlets=[Asset("current_astronauts")]
-    )  # Define that this task updates the `current_astronauts` Dataset
-    def get_astronauts(**context) -> list[dict]:
-        """
-        This task uses the requests library to retrieve a list of Astronauts
-        currently in space. The results are pushed to XCom with a specific key
-        so they can be used in a downstream pipeline. The task returns a list
-        of Astronauts to be used in the next task.
-        """
-        try:
-            r = requests.get("http://api.open-notify.org/astros.json")
-            r.raise_for_status()
-            number_of_people_in_space = r.json()["number"]
-            list_of_people_in_space = r.json()["people"]
-        except Exception:
-            print("API currently not available, using hardcoded data instead.")
-            number_of_people_in_space = 12
-            list_of_people_in_space = [
-                {"craft": "ISS", "name": "Oleg Kononenko"},
-                {"craft": "ISS", "name": "Nikolai Chub"},
-                {"craft": "ISS", "name": "Tracy Caldwell Dyson"},
-                {"craft": "ISS", "name": "Matthew Dominick"},
-                {"craft": "ISS", "name": "Michael Barratt"},
-                {"craft": "ISS", "name": "Jeanette Epps"},
-                {"craft": "ISS", "name": "Alexander Grebenkin"},
-                {"craft": "ISS", "name": "Butch Wilmore"},
-                {"craft": "ISS", "name": "Sunita Williams"},
-                {"craft": "Tiangong", "name": "Li Guangsu"},
-                {"craft": "Tiangong", "name": "Li Cong"},
-                {"craft": "Tiangong", "name": "Ye Guangfu"},
-            ]
+# ID de la Liga Profesional Argentina
+LEAGUE_ID = 128
+SEASONS = [2021, 2022, 2023]
 
-        context["ti"].xcom_push(
-            key="number_of_people_in_space", value=number_of_people_in_space
-        )
-        return list_of_people_in_space
+def make_api_request(url, params=None):
+    try:
+        response = requests.get(url, headers=HEADERS, params=params)
+        response.raise_for_status()
+        time.sleep(1)  # evitar rate limit
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        print(f"Error en API request: {e}")
+        raise
 
-    @task
-    def print_astronaut_craft(greeting: str, person_in_space: dict) -> None:
-        """
-        This task creates a print statement with the name of an
-        Astronaut in space and the craft they are flying on from
-        the API request results of the previous task, along with a
-        greeting which is hard-coded in this example.
-        """
-        craft = person_in_space["craft"]
-        name = person_in_space["name"]
+def extract_fixtures(**context):
+    all_fixtures = []
+    for season in SEASONS:
+        print(f"Extrayendo fixtures para temporada {season}")
+        url = f"{BASE_URL}/fixtures"
+        params = {'league': LEAGUE_ID, 'season': season}
+        data = make_api_request(url, params)
+        if data['response']:
+            for fixture in data['response']:
+                all_fixtures.append({
+                    'season': season,
+                    'league_id': LEAGUE_ID,
+                    'league_name': 'Liga Profesional Argentina',
+                    'fixture_id': fixture['fixture']['id'],
+                    'date_utc': fixture['fixture']['date'],
+                    'round': fixture['league']['round'],
+                    'home_id': fixture['teams']['home']['id'],
+                    'home_name': fixture['teams']['home']['name'],
+                    'away_id': fixture['teams']['away']['id'],
+                    'away_name': fixture['teams']['away']['name'],
+                    'goals_home': fixture['goals']['home'],
+                    'goals_away': fixture['goals']['away'],
+                })
+    df = pd.DataFrame(all_fixtures)
+    df.to_csv('/tmp/fixtures_base.csv', index=False)
+    print(f"Extraídos {len(all_fixtures)} fixtures")
+    return len(all_fixtures)
 
-        print(f"{name} is currently in space flying on the {craft}! {greeting}")
+def extract_standings_data(**context):
+    all_standings = []
+    for season in SEASONS:
+        print(f"Extrayendo standings para temporada {season}")
+        url = f"{BASE_URL}/standings"
+        params = {'league': LEAGUE_ID, 'season': season}
+        data = make_api_request(url, params)
+        if data['response'] and data['response'][0]['league']['standings']:
+            standings = data['response'][0]['league']['standings'][0]
+            for team in standings:
+                all_standings.append({
+                    'season': season,
+                    'team_id': team['team']['id'],
+                    'team_name': team['team']['name'],
+                    'position': team['rank'],
+                    'points': team['points'],
+                })
+    df = pd.DataFrame(all_standings)
+    df.to_csv('/tmp/standings_data.csv', index=False)
+    print(f"Extraídos {len(all_standings)} registros de standings")
+    return len(all_standings)
 
-    # Use dynamic task mapping to run the print_astronaut_craft task for each
-    # Astronaut in space
-    print_astronaut_craft.partial(greeting="Hello! :)").expand(
-        person_in_space=get_astronauts()  # Define dependencies using TaskFlow API syntax
+def merge_all_data(**context):
+    df_fixtures = pd.read_csv('/tmp/fixtures_base.csv')
+    df_standings = pd.read_csv('/tmp/standings_data.csv')
+
+    # merge con standings home
+    df_final = df_fixtures.merge(
+        df_standings.rename(columns={'team_id': 'home_id', 'position': 'position_home', 'points': 'points_home'}),
+        on=['home_id', 'season'], how='left'
+    )
+    # merge con standings away
+    df_final = df_final.merge(
+        df_standings.rename(columns={'team_id': 'away_id', 'position': 'position_away', 'points': 'points_away'}),
+        on=['away_id', 'season'], how='left'
     )
 
+    # features derivadas
+    df_final['points_diff'] = df_final['points_home'] - df_final['points_away']
+    df_final['position_diff'] = df_final['position_away'] - df_final['position_home']
 
-# Instantiate the DAG
-example_astronauts()
+    output_path = '/tmp/liga_profesional_dataset.csv'
+    df_final.to_csv(output_path, index=False)
+
+    print(f"Dataset final creado con {len(df_final)} registros")
+    print(f"Columnas incluidas: {list(df_final.columns)}")
+    return output_path
+
+def cleanup_temp_files(**context):
+    temp_files = ['/tmp/fixtures_base.csv','/tmp/standings_data.csv']
+    for file in temp_files:
+        try:
+            if os.path.exists(file):
+                os.remove(file)
+                print(f"Archivo temporal eliminado: {file}")
+        except Exception as e:
+            print(f"Error eliminando {file}: {e}")
+
+# Configuración del DAG
+default_args = {
+    'owner': 'data-science-team',
+    'depends_on_past': False,
+    'start_date': datetime(2025, 9, 9),
+    'email_on_failure': False,
+    'email_on_retry': False,
+    'retries': 1,
+    'retry_delay': timedelta(minutes=5)
+}
+
+dag = DAG(
+    dag_id='liga_profesional_data_extraction',
+    default_args=default_args,
+    description='Extracción de datos de Liga Profesional Argentina desde API-FOOTBALL',
+    schedule='@daily',
+    catchup=False,
+    max_active_runs=1,
+    tags=['football', 'liga-profesional', 'data-extraction']
+)
+
+task_extract_fixtures = PythonOperator(task_id='extract_fixtures', python_callable=extract_fixtures, dag=dag)
+task_extract_standings = PythonOperator(task_id='extract_standings', python_callable=extract_standings_data, dag=dag)
+task_merge_data = PythonOperator(task_id='merge_all_data', python_callable=merge_all_data, dag=dag)
+task_cleanup = PythonOperator(task_id='cleanup_temp_files', python_callable=cleanup_temp_files, dag=dag)
+
+# Dependencias
+[task_extract_fixtures, task_extract_standings] >> task_merge_data
+task_merge_data >> task_cleanup
