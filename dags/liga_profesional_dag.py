@@ -31,7 +31,6 @@ def make_api_request(url, params=None):
 def extract_fixtures(**context):
     all_fixtures = []
     for season in SEASONS:
-        print(f"Extrayendo fixtures para temporada {season}")
         url = f"{BASE_URL}/fixtures"
         params = {'league': LEAGUE_ID, 'season': season}
         data = make_api_request(url, params)
@@ -53,7 +52,6 @@ def extract_fixtures(**context):
                 })
     df = pd.DataFrame(all_fixtures)
     df.to_csv('/tmp/fixtures_base.csv', index=False)
-    print(f"Extraídos {len(all_fixtures)} fixtures")
     return len(all_fixtures)
 
 def extract_standings_data(**context):
@@ -75,7 +73,6 @@ def extract_standings_data(**context):
                 })
     df = pd.DataFrame(all_standings)
     df.to_csv('/tmp/standings_data.csv', index=False)
-    print(f"Extraídos {len(all_standings)} registros de standings")
     return len(all_standings)
 
 def merge_all_data(**context):
@@ -100,8 +97,6 @@ def merge_all_data(**context):
     output_path = '/tmp/liga_profesional_dataset.csv'
     df_final.to_csv(output_path, index=False)
 
-    print(f"Dataset final creado con {len(df_final)} registros")
-    print(f"Columnas incluidas: {list(df_final.columns)}")
     return output_path
 
 def cleanup_temp_files(**context):
@@ -116,7 +111,7 @@ def cleanup_temp_files(**context):
 
 # Configuración del DAG
 default_args = {
-    'owner': 'data-science-team',
+    'owner': 'grupo-18',
     'depends_on_past': False,
     'start_date': datetime(2025, 9, 9),
     'email_on_failure': False,
